@@ -7,6 +7,5 @@ serial-log-source-y := main.c \
 
 serial-log-ldflags-y := -lpthread
 install-y := serial-log:usr/bin/
-install-y += ../config/serial-log.conf:etc
 
 include ../Build.mk

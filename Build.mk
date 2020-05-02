@@ -1,8 +1,10 @@
 
-PROJECT_DIR	?= $(CURDIR)
+PROJECT_DIR     ?= $(CURDIR)
 DISTDIRS		:= ${PROJECT_DIR}/build
-OUTDIR		  := ${DISTDIRS}
-DESTDIR		  ?= ${PROJECT_DIR}/install
+OUTDIR		    := ${DISTDIRS}
+DESTDIR		    ?= ${PROJECT_DIR}/install
+PROJECT_NAME    ?= $(subst /,_, ${PROJECT_DIR})
+PROJECT_PACKAGE ?= ${PROJECT_NAME}.tar.bz2
 
 CC         := $(CROSS_COMPILE_PREFIX)gcc
 LD         := $(CROSS_COMPILE_PREFIX)ld
@@ -11,6 +13,7 @@ Q          := @
 RM         := rm -rf
 MKDIR      := mkdir -p
 CP         := cp -rf
+TAR        := tar
 
 _CFLAGS    := -Wall -Wextra -Werror -pipe -g3 -O2 -fsigned-char -fno-strict-aliasing -fPIC -Werror=unused-result $(CFLAGS) $(EXTRA_CFLAGS) -I.
 _LDFLAGS   := $(LDFLAGS) $(EXTRA_LDFLAGS) -L.
@@ -74,7 +77,7 @@ define install-define
 $(subst /,-, $(dir $(word 2, $(subst :, ,$1)))):
 	$(Q)$(MKDIR) ${DESTDIR}${PREFIX}/$(dir $(word 2, $(subst :, ,$1)))
 $(addsuffix _install, $(subst /,-, $(subst :,-, $1))):$(subst /,-, $(dir $(word 2, $(subst :, ,$1))))
-	$(Q) echo INSTALL $(word 1, $(subst :, ,$1)); $(CP) ${OUTDIR}/$(word 1, $(subst :, ,$1)) ${DESTDIR}${PREFIX}/$(word 2, $(subst :, ,$1))
+	$(Q) echo INSTALL $(word 1, $(subst :, ,$1)); $(if $(wildcard ${OUTDIR}/$(word 1, $(subst :, ,$1))), $(CP) ${OUTDIR}/$(word 1, $(subst :, ,$1)) ${DESTDIR}${PREFIX}/$(word 2, $(subst :, ,$1)), $(CP) ${PROJECT_DIR}/$(word 1, $(subst :, ,$1)) ${DESTDIR}${PREFIX}/$(word 2, $(subst :, ,$1)))
 $(addsuffix _uninstall, $(subst /,-, $(subst :,-, $1))):
 	$(Q) echo REMOVE $(word 1, $(subst :, ,$1)); $(RM) ${DESTDIR}${PREFIX}/$(word 2, $(subst :, ,$1))/$(word 1, $(subst :, ,$1))
 endef
@@ -83,6 +86,9 @@ $(eval $(foreach D,$(dir-y),$(eval $(call dir-define,$D))))
 $(eval $(foreach T,$(target-y), $(eval $(call target-define,$T))))
 $(eval $(foreach L,$(library-y), $(eval $(call library-define,$L))))
 $(eval $(foreach V,$(install-y), $(eval $(call install-define,$V))))
+
+${PROJECT_PACKAGE}:
+	$(Q) ${TAR} -C ${DESTDIR} -cjvf $@ .
 
 all: $(addsuffix _all, $(dir-y))
 all: $(addsuffix _all, $(library-y))
@@ -99,4 +105,6 @@ clean: $(addsuffix _clean, $(dir-y))
 install: $(addsuffix _install, $(dir-y)) $(addsuffix _install, $(subst /,-, $(subst :,-,$(install-y))))
 	@true
 uninstall: $(addsuffix _uninstall, $(dir-y)) $(addsuffix _uninstall, $(subst /,-, $(subst :,-,$(install-y))))
+	@true
+package: ${PROJECT_PACKAGE}
 	@true
