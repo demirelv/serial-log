@@ -47,7 +47,10 @@ int read_line(int fd, char *buffer, unsigned int size)
 	do {
 		rc = TEMP_FAILURE_RETRY(read(fd, &buffer[p], 1));
 		if (rc < 1) {
-			printf("rc %d errno %d '%s'\n", rc, errno, strerror(errno));
+			if (errno == EAGAIN)
+				return 0;
+			else
+				printf("rc %d errno %d '%s'\n", rc, errno, strerror(errno));
 			return rc;
 		}
 		if (buffer[p] == '\n' || buffer[p] == '\r' || buffer[p] == '\0') {

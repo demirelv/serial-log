@@ -167,7 +167,7 @@ static int remote_handle(remote_t *rh)
 		char buffer[MAX_BUF_SIZE + 128];
 		int len = 0;
 
-		len = snprintf(buffer, sizeof(buffer) - 1, "[%s]%s\n\r", log->date, log->msg);
+		len = snprintf(buffer, sizeof(buffer) - 1, "<4>%s: %s\n\r", log->date, log->msg);
 		if (sendto(rh->fd, buffer, len,
 				MSG_DONTWAIT | MSG_NOSIGNAL,
 				rh->sa, rh->alen) == -1
@@ -176,6 +176,7 @@ static int remote_handle(remote_t *rh)
 			case ECONNRESET:
 			case ENOTCONN:
 			case EPIPE:
+				printf("connection closed errno %d '%s'\n", errno, strerror(errno));
 				close(rh->fd);
 				rh->fd = -1;
 				free(rh->sa);
@@ -216,17 +217,11 @@ static int client_handle(void)
 static char *get_date(void)
 {
 	char date[128] = { 0 };
-	struct tm *ctime;
 	time_t t;
-	
+
 	time(&t);
-	ctime = localtime(&t);
-	if (ctime == NULL) {
-		snprintf(date, sizeof(date), "null");
-		goto bail;
-	}
-	snprintf(date, sizeof(date), "%02d/%02d/%04d, %02d:%02d:%02d", ctime->tm_mday, ctime->tm_mon + 1, ctime->tm_year + 1900, ctime->tm_hour, ctime->tm_min, ctime->tm_sec);
-bail:
+
+	strftime(date, sizeof(date), "%h %e %T", localtime(&t));
 	return strdup(date);
 }
 
@@ -410,6 +405,37 @@ static void signal_handle(int signal)
 	die = 1;
 }
 
+static void check_log_files(remote_t *rh)
+{
+	struct dirent *dir;
+	DIR *d;
+
+	if (rh == NULL || rh->file_path == NULL)
+		return;
+
+	d = opendir(rh->file_path);
+	if (d == NULL) {
+		printf("could not open dir path '%s' \n", rh->file_path);
+		return;
+	}
+
+	while ((dir = readdir(d)) != NULL) {
+		if (dir->d_type != DT_DIR) {
+			char tmp[512] = { 0 };
+
+			if (strncmp("active-", dir->d_name, 7) == 0) {
+				snprintf(tmp, sizeof(tmp), "mv %s/%s %s/%s", rh->file_path, dir->d_name, rh->file_path, &dir->d_name[7]);
+				if (system(tmp)) {
+					printf("could not run cmd '%s' \n", tmp);
+				}
+			}
+		}
+	}
+	closedir(d);
+
+	return;
+}
+
 static void* ftp_thread(void *arg)
 {
 	remote_t *rh = (remote_t *)arg;
@@ -480,6 +506,8 @@ int main(int argc, char *argv[])
 
 	if (load_configs(argv[1], rh))
 		goto bail;
+
+	check_log_files(rh);
 
 	rc = pthread_create(&thrd, NULL, &ftp_thread, rh);
 	if (rc) {

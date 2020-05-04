@@ -6,7 +6,7 @@ PIDFILE=/var/run/serial-log.pid
 LOGFILE=/var/log/serial-log.log
 
 start() {
-  if [ -f /var/run/$PIDNAME ] && kill -0 $(cat /var/run/$PIDNAME); then
+  if [ -f "$PIDNAME" ] && kill -0 $(cat "$PIDNAME"); then
     echo 'Service already running' >&2
     return 1
   fi
@@ -34,7 +34,7 @@ case "$1" in
   stop)
     stop
     ;;
-  retart)
+  restart)
     stop
     start
     ;;

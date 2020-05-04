@@ -1,0 +1,5 @@
+SERIAL_DEV=/dev/ttyUSB0
+HOST=
+PORT=123
+LOG_PATH=/data/serial-log/
+LOG_KEY=home-master
