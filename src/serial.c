@@ -51,8 +51,9 @@ int read_line(int fd, char *buffer, unsigned int size)
 				return 0;
 			else
 				printf("rc %d errno %d '%s'\n", rc, errno, strerror(errno));
-			return rc;
+			return -1;
 		}
+
 		if (buffer[p] == '\n' || buffer[p] == '\r' || buffer[p] == '\0') {
 			buffer[p] = '\0';
 			break;
