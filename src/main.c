@@ -23,6 +23,32 @@
 #include "config.h"
 #include "serial.h"
 
+#define TELOPT_TRANSMIT_BINARY      0  // Binary Transmission (RFC856)
+#define TELOPT_ECHO                 1  // Echo (RFC857)
+#define TELOPT_SGA					3  // Suppress Go Ahead (RFC858)
+#define TELOPT_STATUS               5  // Status (RFC859)
+#define TELOPT_TIMING_MARK          6  // Timing Mark (RFC860)
+#define TELOPT_NAOCRD              10  // Output Carriage-Return Disposition (RFC652)
+#define TELOPT_NAOHTS              11  // Output Horizontal Tab Stops (RFC653)
+#define TELOPT_NAOHTD              12  // Output Horizontal Tab Stop Disposition (RFC654)
+#define TELOPT_NAOFFD              13  // Output Formfeed Disposition (RFC655)
+#define TELOPT_NAOVTS              14  // Output Vertical Tabstops (RFC656)
+#define TELOPT_NAOVTD              15  // Output Vertical Tab Disposition (RFC657)
+#define TELOPT_NAOLFD              16  // Output Linefeed Disposition (RFC658)
+#define TELOPT_EXTEND_ASCII        17  // Extended ASCII (RFC698)
+#define TELOPT_TERMINAL_TYPE       24  // Terminal Type (RFC1091)
+#define TELOPT_NAWS                31  // Negotiate About Window Size (RFC1073)
+#define TELOPT_TERMINAL_SPEED      32  // Terminal Speed (RFC1079)
+#define TELOPT_LFLOW			   33  // Remote Flow Control (RFC1372)
+#define TELOPT_LINEMODE            34  // Linemode (RFC1184)
+#define TELOPT_AUTHENTICATION      37  // Authentication (RFC1416)
+
+#define TELNET_WILL  251   // Will option code
+#define TELNET_WONT  252   // Won't option code
+#define TELNET_DO    253   // Do option code
+#define TELNET_DONT  254   // Don't option code
+#define TELNET_IAC   255   // Interpret as command
+
 struct log {
 	char *msg;
 	char *date;
@@ -53,7 +79,6 @@ struct client {
 	int level;
 	int inited;
 	char type[128];
-	struct log *point;
 	TAILQ_ENTRY(client) list;
 };
 
@@ -176,7 +201,7 @@ static int remote_handle(remote_t *rh)
 			case ECONNRESET:
 			case ENOTCONN:
 			case EPIPE:
-				printf("connection closed errno %d '%s'\n", errno, strerror(errno));
+				debug("connection closed errno %d '%s'\n", errno, strerror(errno));
 				close(rh->fd);
 				rh->fd = -1;
 				free(rh->sa);
@@ -189,26 +214,36 @@ static int remote_handle(remote_t *rh)
 	return 0;
 }
 
-static int client_handle(void)
+static int client_handle(char *buffer, unsigned int len)
 {
 	struct client *cl, *n;
-	struct log *log;
 	int rc = 0;
 
 	TAILQ_FOREACH_SAFE(cl, &client_list, list, n) {
-		for (log = cl->point == NULL ? TAILQ_FIRST(&log_list) : TAILQ_NEXT(cl->point, list); log; log = TAILQ_NEXT(log, list)) {
-			char buffer[MAX_BUF_SIZE + 128];
-			int len = 0;
+		if (unix_write(cl->client, buffer, len)) {
+			if (errno != EAGAIN)
+				cl->remove = 1;
+		}
+	}
+	return rc;
+}
 
-			len = snprintf(buffer, sizeof(buffer) - 1, "[%s]%s\n\r", log->date, log->msg);
-			if (unix_write(cl->client, buffer, len)) {
-				if (errno != EAGAIN)
-					cl->remove = 1;
-				else
-					rc = 1;
-				break;
-			}
-			cl->point = log;
+static int send_client_logs(struct client *cl)
+{
+	struct log *log;
+	int rc = 0;
+
+	for (log = TAILQ_FIRST(&log_list); log; log = TAILQ_NEXT(log, list)) {
+		char buffer[MAX_BUF_SIZE + 128];
+		int len = 0;
+
+		len = snprintf(buffer, sizeof(buffer) - 1, "%s\n", log->msg);
+		if (unix_write(cl->client, buffer, len)) {
+			if (errno != EAGAIN)
+				cl->remove = 1;
+			else
+				rc = 1;
+			break;
 		}
 	}
 	return rc;
@@ -223,6 +258,23 @@ static char *get_date(void)
 
 	strftime(date, sizeof(date), "%h %e %T", localtime(&t));
 	return strdup(date);
+}
+
+static int send_iac(struct client *cl, unsigned char command, unsigned char option)
+{
+	unsigned char b[3];
+	int rc = 0;
+
+	b[0] = TELNET_IAC;
+	b[1] = command;
+	b[2] = option;
+
+	rc = unix_write(cl->client, (char *)b, 3);
+	if (rc) {
+		if (errno != EAGAIN)
+			cl->remove = 1;
+	}
+	return rc;
 }
 
 static void get_file_name(char *filename, char *key)
@@ -281,7 +333,7 @@ static int log_add(char *msg, int len, remote_t *rh)
 
 	log = (struct log *)malloc(sizeof(*log));
 	if (!log) {
-		printf("Failed to alloc log record\n");
+		debug("Failed to alloc log record\n");
 		return -1;
 	}
 
@@ -298,17 +350,10 @@ static int log_add(char *msg, int len, remote_t *rh)
 	if (gLogRecordCount < MAXLOGCOUNT) {
 		gLogRecordCount++;
 	} else {
-		struct client *cl;
-
 		log = TAILQ_FIRST(&log_list);
 		if (log) {
 			if (rh->point != NULL && rh->point == log)
 				rh->point = TAILQ_NEXT(log, list);
-			TAILQ_FOREACH(cl, &client_list, list) {
-				if (cl->point == log) {
-					cl->point = TAILQ_NEXT(log, list);
-				}
-			}
 			TAILQ_REMOVE(&log_list, log, list);
 			if (log->date)
 				free(log->date);
@@ -384,7 +429,7 @@ bail:
 static int load_configs(const char *filename, remote_t *rh)
 {
 	if (read_config(filename)) {
-		printf("read config fail '%s' \n", filename);
+		debug("read config fail '%s' \n", filename);
 		goto bail;
 	}
 
@@ -415,18 +460,18 @@ static void check_log_files(remote_t *rh)
 
 	d = opendir(rh->file_path);
 	if (d == NULL) {
-		printf("could not open dir path '%s' \n", rh->file_path);
+		debug("could not open dir path '%s' \n", rh->file_path);
 		return;
 	}
 
 	while ((dir = readdir(d)) != NULL) {
 		if (dir->d_type != DT_DIR) {
-			char tmp[512] = { 0 };
+			char tmp[1024] = { 0 };
 
 			if (strncmp("active-", dir->d_name, 7) == 0) {
-				snprintf(tmp, sizeof(tmp), "mv %s/%s %s/%s", rh->file_path, dir->d_name, rh->file_path, &dir->d_name[7]);
+				snprintf(tmp, sizeof(tmp), "mv %s/%s %s/%s", rh->file_path, dir->d_name, rh->file_path, (char *)&dir->d_name[7]);
 				if (system(tmp)) {
-					printf("could not run cmd '%s' \n", tmp);
+					debug("could not run cmd '%s' \n", tmp);
 				}
 			}
 		}
@@ -463,9 +508,9 @@ static void* ftp_thread(void *arg)
 					if (system(tmp) == 0) {
 						snprintf(tmp, sizeof(tmp), "rm %s/%s", rh->file_path, dir->d_name);
 						if (system(tmp))
-							printf("could not run cmd '%s' \n", tmp);
+							debug("could not run cmd '%s' \n", tmp);
 					} else
-						printf("could not run cmd '%s' \n", tmp);
+						debug("could not run cmd '%s' \n", tmp);
 				}
 			}
 		}
@@ -522,6 +567,7 @@ int main(int argc, char *argv[])
 	FD_ZERO(&afds);
 	FD_SET(server, &afds);
 
+	debug("serial log started !\n");
 	while (!die) {
 		tv.tv_sec = timeout ? timeout : 10;
 		tv.tv_usec = 0;
@@ -530,11 +576,11 @@ int main(int argc, char *argv[])
 			timeout = 1;
 			serial = open_serial(rh->serial_dev, 5);
 			if (serial > -1) {
-				printf("serial port opened '%s'\n", rh->serial_dev);
+				debug("serial port opened '%s'\n", rh->serial_dev);
 				FD_SET(serial, &afds);
 				timeout = 0;
 			} else
-				printf("could not open serial port '%s'\n", rh->serial_dev);
+				debug("could not open serial port '%s'\n", rh->serial_dev);
 		}
 		bcopy((char *)&afds, (char *)&rfds, sizeof(rfds));
 		if (select(nfds, &rfds, (fd_set *)0, (fd_set *)0,
@@ -544,16 +590,21 @@ int main(int argc, char *argv[])
 			break;
 		}
 		if (serial > -1 && FD_ISSET(serial, &rfds)) {
-			len = read_line(serial, buffer, sizeof(buffer));
+			len = read_serial(serial, buffer, sizeof(buffer));
 			if (len < 0) {
-				printf("close serial port ret %d \n", len);
+				debug("close serial port ret %d \n", len);
 				FD_CLR(serial, &afds);
 				close(serial);
 				serial = -1;
 				timeout = 1;
-				
 			} else if (len > 0) {
-				log_add(buffer, len, rh);
+				client_handle(buffer, len);
+				do {
+					len = read_line(buffer, sizeof(buffer));
+					if (len > 0) {
+						log_add(buffer, len, rh);
+					}
+				} while(len > 0);
 			}
 		}
 		if (FD_ISSET(server, &rfds)) {
@@ -571,21 +622,35 @@ int main(int argc, char *argv[])
 				fcntl(client, F_SETFD, fcntl(client, F_GETFD, 0) | FD_CLOEXEC);
 				fcntl(client, F_SETFL, fcntl(client, F_GETFL, 0) | O_NONBLOCK);
 				TAILQ_INSERT_TAIL(&client_list, cl, list);
+				send_client_logs(cl);
+
+				send_iac(cl, TELNET_DO, TELOPT_ECHO);
+				send_iac(cl, TELNET_DO, TELOPT_LFLOW);
+				send_iac(cl, TELNET_WILL, TELOPT_ECHO);
+				send_iac(cl, TELNET_WILL, TELOPT_SGA);
 			}
 		}
 		for (fd = 0; fd < nfds; fd++) {
 			if (fd != serial && fd != server && FD_ISSET(fd, &rfds)) {
 				struct client *cl = get_client(fd);
 				if (cl != NULL) {
-					
 					len = recv(fd, buffer, sizeof(buffer), 0);
-					if (len < 0) {
-						printf("recv failed ret=%d \n", len);
+					if (len < 1) {
+						debug("recv failed ret=%d \n", len);
 						TAILQ_REMOVE(&client_list, cl, list);
 						free(cl);
 						FD_CLR(fd, &afds);
 						close(fd);
-						break;
+					} else {
+						int rlen = 0;
+						rlen = write_serial(serial, buffer, len);
+						if (rlen != len) {
+							debug("close serial port rlen = %d != %d \n", rlen, len);
+							FD_CLR(serial, &afds);
+							close(serial);
+							serial = -1;
+							timeout = 1;
+						}
 					}
 				} else {
 					close(fd);
@@ -595,8 +660,7 @@ int main(int argc, char *argv[])
 		}
 
 		remote_handle(rh);
-		if (client_handle())
-			timeout = 1;
+
 		do {
 			struct client *cl = find_remove(&client_list);
 			if (cl == NULL)
@@ -627,7 +691,7 @@ bail:
 			fclose(rh->file);
 			snprintf(cmd, sizeof(cmd), "mv %s/active-%s %s/%s ", rh->file_path, rh->file_name, rh->file_path, rh->file_name);
 			if (system(cmd))
-				printf("system ret fail '%s'\n", cmd);
+				debug("system ret fail '%s'\n", cmd);
 		}
 		free(rh);
 	}

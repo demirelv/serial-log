@@ -7,6 +7,10 @@
 
 #include "utils.h"
 
+static unsigned int wp = 0;
+static unsigned int rp = 0;
+static char serbuf[2048];
+
 int open_serial(const char *dev, int timeout)
 {
 	int fd;
@@ -39,28 +43,66 @@ int open_serial(const char *dev, int timeout)
 	return fd;
 }
 
-int read_line(int fd, char *buffer, unsigned int size)
+int read_line(char *buffer, unsigned int size)
 {
-	int rc;
-	static unsigned int p = 0;
+	int rc = 0;
 
-	do {
-		rc = TEMP_FAILURE_RETRY(read(fd, &buffer[p], 1));
-		if (rc < 1) {
-			if (errno == EAGAIN)
-				return 0;
-			else
-				printf("rc %d errno %d '%s'\n", rc, errno, strerror(errno));
-			return -1;
+	for (;rp < wp; rp++) {
+		if (serbuf[rp] == '\n' || serbuf[rp] == '\r' || serbuf[rp] == '\0') {
+			if (rp && rp < size)
+				memcpy(buffer, serbuf, rp);
+			rc = rp < size ? rp : 0;
+			rp++;
+			if (rp < wp) {
+				memmove(serbuf, &serbuf[rp], wp - rp);
+			}
+			wp -= rp;
+			rp = 0;
+			if (rc > 0)
+				return rc;
 		}
+	}
 
-		if (buffer[p] == '\n' || buffer[p] == '\r' || buffer[p] == '\0') {
-			buffer[p] = '\0';
-			break;
-		}
-		p++;
-	} while (p < size - 1);
-	rc = p;
-	p = 0;
 	return rc;
  }
+
+ int read_serial(int fd, char *buffer, unsigned int size)
+{
+	int rc;
+
+	rc = TEMP_FAILURE_RETRY(read(fd, buffer, size));
+	if (rc < 1) {
+		debug("serial read rc %d errno %d '%s'\n", rc, errno, strerror(errno));
+		return -1;
+	}
+
+	if (rc + wp < sizeof(serbuf)) {
+		memcpy(&serbuf[wp], buffer, rc);
+		wp += rc;
+	} else {
+		wp = 0;
+		rp = 0;
+	}
+
+	return rc;
+ }
+
+int write_serial(int fd, const char *buffer, int len)
+{
+	int cur = 0;
+	int written = 0;
+
+	if (fd < 0 ) {
+		return -1;
+	}
+
+	while (cur < len) {
+		written = TEMP_FAILURE_RETRY(write(fd, buffer + cur, len - cur));
+		if (written < 0) {
+			return -1;
+		}
+		cur += written;
+	}
+
+	return cur;
+}

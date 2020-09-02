@@ -31,4 +31,10 @@
 void set_nport(struct sockaddr *sa, unsigned port);
 unsigned  monotonic_sec(void);
 int unix_write(int  fd, const char *buff, int len);
+#define debug(arg...)				\
+		{							\
+			fprintf(stderr, arg);	\
+			fflush(stderr);			\
+		}
+
 #endif /* __UTILS_H__ */
